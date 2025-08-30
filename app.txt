@@ -1,0 +1,22 @@
+import streamlit as st
+import tensorflow as tf
+import numpy as np
+from PIL import Image
+
+model = tf.keras.models.load_model("plant_disease_model.keras")
+class_names = ['Healthy', 'Disease1', 'Disease2']
+
+st.title("🌿 Plant Disease Detection")
+st.write("Upload a plant leaf image to detect its health status.")
+
+uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None:
+    img = Image.open(uploaded_file).convert("RGB")
+    st.image(img, caption="Uploaded Image", use_column_width=True)
+    img = img.resize((128, 128))
+    img_array = np.array(img) / 255.0
+    img_array = np.expand_dims(img_array, axis=0)
+    prediction = model.predict(img_array)
+    result = class_names[np.argmax(prediction)]
+    st.success(f"Prediction: **{result}**")
