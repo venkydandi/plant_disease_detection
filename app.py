@@ -271,6 +271,25 @@ def inject_styles():
             background: rgba(255, 255, 255, 0.22);
         }
 
+        [data-testid="stFileUploaderDropzone"] button {
+            background: linear-gradient(135deg, #1f9c62, #167b4c) !important;
+            color: #ffffff !important;
+            border: 1px solid rgba(13, 91, 56, 0.85) !important;
+            border-radius: 10px !important;
+            font-weight: 700 !important;
+        }
+
+        [data-testid="stFileUploaderDropzone"] button:hover {
+            background: linear-gradient(135deg, #23ae6d, #1b8a57) !important;
+            color: #ffffff !important;
+            box-shadow: 0 8px 16px rgba(20, 99, 62, 0.28) !important;
+        }
+
+        [data-testid="stFileUploaderDropzone"] button:focus {
+            outline: 2px solid rgba(31, 156, 98, 0.35) !important;
+            outline-offset: 2px !important;
+        }
+
         [data-testid="stSidebar"] {
             background: linear-gradient(180deg, #f9fff6, #f0f8ef);
             border-left: 1px solid rgba(30, 71, 47, 0.1);
