@@ -53,3 +53,15 @@ The app sidebar shows current mode:
 
 - `Mode: Demo fallback`
 - `Mode: Trained model`
+
+## Public Deployment (Streamlit Community Cloud)
+
+1. Open: `https://share.streamlit.io/`
+2. Sign in with GitHub.
+3. Click `New app` and choose:
+- Repository: `venkydandi/plant_disease_detection`
+- Branch: `main`
+- Main file path: `app.py`
+4. Click `Deploy`.
+
+After deployment, Streamlit gives a public live link.
