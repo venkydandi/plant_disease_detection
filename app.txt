@@ -1,22 +1,429 @@
-import streamlit as st
-import tensorflow as tf
+import json
+from pathlib import Path
+
+import joblib
 import numpy as np
 from PIL import Image
+import streamlit as st
 
-model = tf.keras.models.load_model("plant_disease_model.keras")
-class_names = ['Healthy', 'Disease1', 'Disease2']
+from ml_utils import IMG_SIZE, extract_features, normalize_image
 
-st.title("🌿 Plant Disease Detection")
-st.write("Upload a plant leaf image to detect its health status.")
+try:
+    import tensorflow as tf
+except Exception:
+    tf = None
 
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+
+MODEL_PATH = Path("plant_disease_model.keras")
+SKLEARN_MODEL_PATH = Path("fallback_model.joblib")
+LABELS_PATH = Path("class_names.json")
+DEFAULT_CLASSES = ["Healthy", "Leaf Spot", "Rust"]
+
+
+@st.cache_resource
+def load_keras_model(path: Path):
+    if tf is None or not path.exists():
+        return None
+    return tf.keras.models.load_model(path)
+
+
+@st.cache_resource
+def load_sklearn_bundle(path: Path):
+    if not path.exists():
+        return None
+    try:
+        bundle = joblib.load(path)
+        if isinstance(bundle, dict) and "model" in bundle:
+            return bundle
+    except Exception:
+        return None
+    return None
+
+
+def load_class_names(keras_model, sklearn_bundle, labels_path: Path):
+    if keras_model is not None:
+        output_size = int(keras_model.output_shape[-1])
+        if labels_path.exists():
+            try:
+                data = json.loads(labels_path.read_text(encoding="utf-8"))
+                if isinstance(data, list) and len(data) == output_size:
+                    return [str(name) for name in data]
+            except (OSError, json.JSONDecodeError):
+                pass
+        return [f"Class_{idx}" for idx in range(output_size)]
+
+    if sklearn_bundle is not None and "class_names" in sklearn_bundle:
+        return [str(name) for name in sklearn_bundle["class_names"]]
+
+    if labels_path.exists():
+        try:
+            data = json.loads(labels_path.read_text(encoding="utf-8"))
+            if isinstance(data, list) and data:
+                return [str(name) for name in data]
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    return DEFAULT_CLASSES
+
+
+def preprocess_image(image: Image.Image):
+    img_array = normalize_image(image, IMG_SIZE)
+    return np.expand_dims(img_array, axis=0), img_array
+
+
+def predict_demo(img_array):
+    # Lightweight fallback so app remains usable without TensorFlow/model files.
+    red_mean = float(np.mean(img_array[:, :, 0]))
+    green_mean = float(np.mean(img_array[:, :, 1]))
+    blue_mean = float(np.mean(img_array[:, :, 2]))
+
+    if green_mean > red_mean and green_mean > blue_mean:
+        return 0, 0.70
+    if red_mean >= green_mean:
+        return 1, 0.62
+    return 2, 0.60
+
+
+def build_demo_distribution(img_array, class_count):
+    red_mean = float(np.mean(img_array[:, :, 0]))
+    green_mean = float(np.mean(img_array[:, :, 1]))
+    blue_mean = float(np.mean(img_array[:, :, 2]))
+    values = np.array([green_mean, red_mean, blue_mean], dtype=np.float32)
+    values = np.maximum(values, 1e-6)
+    probs = values / np.sum(values)
+
+    if class_count <= 3:
+        return probs[:class_count]
+
+    padded = np.zeros(class_count, dtype=np.float32)
+    padded[:3] = probs
+    remainder = max(0.0, 1.0 - float(np.sum(padded[:3])))
+    if class_count > 3:
+        padded[3:] = remainder / (class_count - 3)
+    return padded
+
+
+def predict_with_sklearn(bundle, img_array):
+    model = bundle["model"]
+    features = extract_features(img_array).reshape(1, -1)
+    if hasattr(model, "predict_proba"):
+        distribution = np.array(model.predict_proba(features)[0], dtype=np.float32)
+        predicted_idx = int(np.argmax(distribution))
+        confidence = float(distribution[predicted_idx])
+        return predicted_idx, confidence, distribution
+
+    predicted_idx = int(model.predict(features)[0])
+    class_count = len(bundle.get("class_names", []))
+    distribution = np.zeros(max(class_count, predicted_idx + 1), dtype=np.float32)
+    distribution[predicted_idx] = 1.0
+    return predicted_idx, 1.0, distribution
+
+
+def inject_styles():
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&family=Sora:wght@600;700;800&display=swap');
+
+        :root {
+            --ink: #1d2b1f;
+            --ink-soft: #46594a;
+            --glass: rgba(255, 255, 255, 0.76);
+            --glass-strong: rgba(255, 255, 255, 0.88);
+            --stroke: rgba(255, 255, 255, 0.72);
+            --mint: #1f9c62;
+            --amber: #d57d28;
+            --sky: #2f83aa;
+        }
+
+        .stApp {
+            background:
+                radial-gradient(900px 420px at -10% -30%, #ffd8ac 0%, transparent 55%),
+                radial-gradient(850px 420px at 115% -15%, #c3f1d2 0%, transparent 52%),
+                radial-gradient(700px 300px at 85% 110%, #cdefff 0%, transparent 56%),
+                linear-gradient(140deg, #fdf6e9 0%, #edf8ee 45%, #eef8ff 100%);
+            color: var(--ink);
+        }
+
+        .block-container {
+            max-width: 1120px;
+            padding-top: 1.2rem;
+            padding-bottom: 2.1rem;
+        }
+
+        h1, h2, h3 {
+            font-family: 'Sora', sans-serif;
+            letter-spacing: -0.02em;
+            color: var(--ink);
+        }
+
+        p, label, .stMarkdown, .stText {
+            font-family: 'Manrope', sans-serif;
+            color: var(--ink-soft);
+        }
+
+        .hero-card {
+            background: linear-gradient(135deg, var(--glass-strong), rgba(255,255,255,0.62));
+            border: 1px solid var(--stroke);
+            border-radius: 24px;
+            padding: 1.3rem;
+            margin-bottom: 0.9rem;
+            backdrop-filter: blur(8px);
+            box-shadow: 0 22px 45px rgba(32, 57, 45, 0.12);
+            animation: driftIn 620ms ease-out;
+        }
+
+        .status-chip {
+            display: inline-block;
+            background: rgba(31, 156, 98, 0.14);
+            color: #14643d;
+            border: 1px solid rgba(31, 156, 98, 0.28);
+            border-radius: 999px;
+            padding: 0.26rem 0.75rem;
+            font-size: 0.83rem;
+            font-family: 'Manrope', sans-serif;
+            margin-top: 0.35rem;
+        }
+
+        .bento-card {
+            background: var(--glass);
+            border: 1px solid var(--stroke);
+            border-radius: 18px;
+            padding: 1rem;
+            backdrop-filter: blur(8px);
+            box-shadow: 0 14px 34px rgba(44, 62, 51, 0.1);
+            animation: riseIn 620ms ease-out;
+        }
+
+        .result-card {
+            background: linear-gradient(120deg, rgba(31,156,98,0.12), rgba(213,125,40,0.12));
+            border: 1px solid rgba(31,156,98,0.26);
+            border-radius: 14px;
+            padding: 0.85rem;
+            margin-top: 0.5rem;
+        }
+
+        .label-value {
+            font-family: 'Sora', sans-serif;
+            font-size: 1.08rem;
+            color: var(--ink);
+            font-weight: 700;
+        }
+
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.75rem;
+            margin: 0.7rem 0 0.95rem;
+        }
+
+        .metric-box {
+            background: rgba(255,255,255,0.72);
+            border: 1px solid rgba(255,255,255,0.74);
+            border-radius: 12px;
+            padding: 0.75rem;
+        }
+
+        .metric-k {
+            font-family: 'Manrope', sans-serif;
+            font-size: 0.75rem;
+            color: var(--ink-soft);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+
+        .metric-v {
+            font-family: 'Sora', sans-serif;
+            font-size: 0.98rem;
+            color: var(--ink);
+            margin-top: 0.2rem;
+        }
+
+        .section-title {
+            font-family: 'Sora', sans-serif;
+            font-size: 1rem;
+            margin: 0 0 0.4rem;
+            color: var(--ink);
+        }
+
+        .section-sub {
+            font-size: 0.9rem;
+            margin: 0;
+            color: var(--ink-soft);
+        }
+
+        .upload-shell {
+            border: 1px dashed rgba(47, 86, 62, 0.28);
+            border-radius: 14px;
+            background: linear-gradient(140deg, rgba(214, 244, 222, 0.96), rgba(183, 233, 198, 0.9));
+            padding: 0.25rem;
+            transition: transform 180ms ease, box-shadow 180ms ease;
+        }
+
+        .upload-shell:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 12px 24px rgba(31, 100, 61, 0.14);
+        }
+
+        .stFileUploader > div {
+            border: none;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.22);
+        }
+
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #f9fff6, #f0f8ef);
+            border-left: 1px solid rgba(30, 71, 47, 0.1);
+        }
+
+        [data-testid="stSidebar"] * {
+            font-family: 'Manrope', sans-serif;
+        }
+
+        @keyframes driftIn {
+            from { transform: translateY(14px) scale(0.98); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        @keyframes riseIn {
+            from { transform: translateY(16px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        @media (max-width: 768px) {
+            .block-container {
+                padding-top: 0.8rem;
+                padding-left: 0.7rem;
+                padding-right: 0.7rem;
+            }
+
+            .hero-card {
+                border-radius: 16px;
+                padding: 1rem;
+            }
+
+            .metric-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+st.set_page_config(page_title="Plant Disease Detection", page_icon="leaf", layout="wide")
+inject_styles()
+
+keras_model = load_keras_model(MODEL_PATH)
+sklearn_bundle = load_sklearn_bundle(SKLEARN_MODEL_PATH)
+class_names = load_class_names(keras_model, sklearn_bundle, LABELS_PATH)
+
+if keras_model is not None:
+    status_label = "TensorFlow trained model"
+elif sklearn_bundle is not None:
+    status_label = "Classical ML model"
+else:
+    status_label = "Demo fallback"
+
+st.markdown(
+    f"""
+    <div class="hero-card">
+        <h1 style="margin-bottom:0.2rem;">Plant Health AI Dashboard</h1>
+        <p style="margin-top:0; margin-bottom:0.25rem;">A modern visual diagnosis interface for quick crop-health screening.</p>
+        <div class="metric-grid">
+            <div class="metric-box">
+                <div class="metric-k">Mode</div>
+                <div class="metric-v">{status_label}</div>
+            </div>
+            <div class="metric-box">
+                <div class="metric-k">Image Size</div>
+                <div class="metric-v">128 x 128</div>
+            </div>
+            <div class="metric-box">
+                <div class="metric-k">Supported</div>
+                <div class="metric-v">JPG, JPEG, PNG</div>
+            </div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(f"<span class='status-chip'>Mode: {status_label}</span>", unsafe_allow_html=True)
+
+st.sidebar.markdown("## App Status")
+if keras_model is not None:
+    st.sidebar.success("Mode: TensorFlow trained model")
+elif sklearn_bundle is not None:
+    st.sidebar.success("Mode: Classical ML model")
+else:
+    st.sidebar.warning("Mode: Demo fallback")
+    st.sidebar.caption("Train either `plant_disease_model.keras` or `fallback_model.joblib` for accurate predictions.")
+
+if sklearn_bundle is None:
+    st.sidebar.markdown("## Improve Accuracy")
+    st.sidebar.code("python train_fallback_model.py", language="bash")
+
+st.sidebar.markdown("## Tips")
+st.sidebar.caption("Use bright, focused leaf photos for better results.")
+st.sidebar.caption("PNG and JPG files are supported.")
+
+st.markdown("<div class='bento-card upload-shell'>", unsafe_allow_html=True)
+uploaded_file = st.file_uploader("Choose a leaf image", type=["jpg", "jpeg", "png"])
+st.markdown("</div>", unsafe_allow_html=True)
 
 if uploaded_file is not None:
-    img = Image.open(uploaded_file).convert("RGB")
-    st.image(img, caption="Uploaded Image", use_column_width=True)
-    img = img.resize((128, 128))
-    img_array = np.array(img) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)
-    prediction = model.predict(img_array)
-    result = class_names[np.argmax(prediction)]
-    st.success(f"Prediction: **{result}**")
+    image = Image.open(uploaded_file).convert("RGB")
+    left_col, right_col = st.columns([1.1, 1], gap="large")
+
+    with left_col:
+        st.markdown("<div class='bento-card'>", unsafe_allow_html=True)
+        st.markdown("<p class='section-title'>Uploaded Image</p>", unsafe_allow_html=True)
+        st.image(image, caption="Uploaded image", use_container_width=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    model_input, img_array = preprocess_image(image)
+
+    if keras_model is not None:
+        prediction = keras_model.predict(model_input, verbose=0)
+        predicted_idx = int(np.argmax(prediction, axis=1)[0])
+        confidence = float(np.max(prediction, axis=1)[0])
+        distribution = np.array(prediction[0], dtype=np.float32)
+    elif sklearn_bundle is not None:
+        predicted_idx, confidence, distribution = predict_with_sklearn(sklearn_bundle, img_array)
+    else:
+        predicted_idx, confidence = predict_demo(img_array)
+        distribution = build_demo_distribution(img_array, len(class_names))
+
+    if predicted_idx < len(class_names):
+        result = class_names[predicted_idx]
+    else:
+        result = f"Class_{predicted_idx}"
+
+    with right_col:
+        st.markdown("<div class='bento-card'>", unsafe_allow_html=True)
+        st.markdown("<p class='section-title'>Prediction Summary</p>", unsafe_allow_html=True)
+        st.markdown("<p class='section-sub'>Model confidence and class distribution</p>", unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div class="result-card">
+                <div>Detected Class</div>
+                <div class="label-value">{result}</div>
+            </div>
+            <div class="result-card">
+                <div>Confidence</div>
+                <div class="label-value">{confidence:.2%}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.progress(min(max(confidence, 0.0), 1.0))
+
+        st.markdown("<p class='section-title' style='margin-top:0.75rem;'>Class Probabilities</p>", unsafe_allow_html=True)
+        for idx, prob in enumerate(distribution):
+            name = class_names[idx] if idx < len(class_names) else f"Class_{idx}"
+            st.write(f"{name}: {float(prob):.2%}")
+
+        st.caption("For critical decisions, validate with expert agronomy guidance.")
+        st.markdown("</div>", unsafe_allow_html=True)
